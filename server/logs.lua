@@ -1,5 +1,4 @@
 -- Discord webhook logger: queued and rate limited so Discord never returns 429
-lib.locale()
 
 local Queue, Busy = {}, false
 local SecSeen = {} -- [src..reason] = os.time()
@@ -39,7 +38,7 @@ local function process()
             local job = table.remove(Queue, 1)
             local waitMs = 1100 -- ~1 msg/sec keeps us under Discord's per-webhook limit
             local done = false
-            PerformHttpRequest(job.url, function(status, _, headers)
+            PerformHttpRequest(job.url, function(status)
                 if status == 429 then
                     table.insert(Queue, 1, job) -- retry after backoff
                     waitMs = 5000

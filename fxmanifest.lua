@@ -4,10 +4,10 @@ game 'rdr3'
 lua54 'yes'
 
 description 'rsg-ambush - random gang ambushes on the trail'
-version '3.0.0'
+version '3.0.1'
 
 shared_scripts {
-    '@ox_lib/init.lua',
+    '@rsg-core/shared/locale.lua',
     'shared/config.lua'
 }
 
@@ -26,6 +26,5 @@ files { 'locales/*.json' }
 dependencies {
     'rsg-core',
     'rsg-inventory',
-    'ox_lib',
-    'ox_target'
+    'rsg-target'
 }

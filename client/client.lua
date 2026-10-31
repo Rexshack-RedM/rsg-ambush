@@ -1,7 +1,12 @@
-lib.locale()
+local RSGCore = exports['rsg-core']:GetCoreObject()
 
 -- Active ambush state
 local Active = nil  -- { id, peds = {}, horses = {}, blips = {}, looted = {}, started, wonAt }
+local Searching = false
+
+local function notify(desc, ntype, title, duration)
+    RSGCore.Functions.Notify({ title = title or locale('ambush_title'), description = desc, type = ntype, duration = duration or 5000 })
+end
 
 ---------------------------------------------------------------------
 -- Helpers
@@ -30,6 +35,17 @@ local function groundAt(x, y, zGuess)
         if ok then return z end
     end
     return zGuess
+end
+
+local function deleteEntity(ent)
+    if not DoesEntityExist(ent) then return end
+    if NetworkGetEntityIsNetworked(ent) and not NetworkHasControlOfEntity(ent) then
+        NetworkRequestControlOfEntity(ent)
+        local t = GetGameTimer() + 1000
+        while not NetworkHasControlOfEntity(ent) and GetGameTimer() < t do Wait(10) end
+    end
+    SetEntityAsMissionEntity(ent, true, true)
+    DeleteEntity(ent)
 end
 
 local function giveWeapon(ped, weapon)
@@ -62,33 +78,33 @@ local function setupBandit(ped, gang, relHash, playerPed)
 end
 
 local function addLootTarget(ped)
-    exports.ox_target:addLocalEntity(ped, {
+    exports['rsg-target']:addLocalEntity(ped, {
         {
             name = 'rsg_ambush_loot',
             icon = 'fa-solid fa-hand',
             label = locale('loot_target'),
             distance = Config.LootDistance,
             canInteract = function(entity)
-                return Active ~= nil and IsEntityDead(entity) and not Active.looted[entity] and not IsEntityDead(cache.ped)
+                return Active ~= nil and IsEntityDead(entity) and not Active.looted[entity] and not Searching and not IsEntityDead(PlayerPedId())
             end,
             onSelect = function(data)
-                if not Active or Active.looted[data.entity] or lib.progressActive() then return end
                 local ped = data.entity
-                if lib.progressBar({
+                if not Active or Active.looted[ped] or Searching then return end
+                Searching = true
+                local done = RSGCore.Functions.ProgressBar({
                     duration = Config.LootTime,
                     label = locale('loot_progress'),
                     useWhileDead = false,
                     canCancel = true,
                     disable = { move = true, combat = true },
                     anim = { scenario = 'WORLD_HUMAN_CROUCH_INSPECT' },
-                }) then
-                    if not Active or not DoesEntityExist(ped) then return end
-                    Active.looted[ped] = true
-                    local ok = lib.callback.await('rsg-ambush:server:loot', false, Active.id, NetworkGetNetworkIdFromEntity(ped))
-                    if not ok then
-                        lib.notify({ title = locale('loot_title'), description = locale('loot_none'), type = 'inform' })
-                    end
+                })
+                if done and Active and DoesEntityExist(ped) and not Active.looted[ped] then
+                    local result = RSGCore.Functions.AwaitCallback('rsg-ambush:server:loot', 10000, Active.id, NetworkGetNetworkIdFromEntity(ped))
+                    if result and Active then Active.looted[ped] = true end -- only lock the body once the server accepted it
+                    if result == 'empty' then notify(locale('loot_none'), 'inform', locale('loot_title')) end
                 end
+                Searching = false
             end
         }
     })
@@ -97,25 +113,28 @@ end
 ---------------------------------------------------------------------
 -- Cleanup
 ---------------------------------------------------------------------
-local function cleanup(silent)
-    if not Active then return end
+local function removeBlips()
     for _, blip in ipairs(Active.blips) do
         if DoesBlipExist(blip) then RemoveBlip(blip) end
     end
+    Active.blips = {}
+end
+
+local function cleanup(silent)
+    if not Active then return end
+    removeBlips()
     for _, ped in ipairs(Active.peds) do
         if DoesEntityExist(ped) then
-            exports.ox_target:removeLocalEntity(ped, 'rsg_ambush_loot')
-            DeleteEntity(ped)
+            exports['rsg-target']:removeLocalEntity(ped, 'rsg_ambush_loot')
+            deleteEntity(ped)
         end
     end
-    for _, horse in ipairs(Active.horses) do
-        if DoesEntityExist(horse) then DeleteEntity(horse) end
-    end
-    TriggerServerEvent('rsg-ambush:server:finish', Active.id)
-    Active = nil
-    if not silent then
-        lib.notify({ title = locale('ambush_title'), description = locale('ambush_over'), type = 'inform' })
-    end
+    for _, horse in ipairs(Active.horses) do deleteEntity(horse) end
+    local id = Active.id
+    Active = nil -- clear first so the monitor thread can't re-enter
+    Searching = false
+    TriggerServerEvent('rsg-ambush:server:finish', id)
+    if not silent then notify(locale('ambush_over'), 'inform') end
 end
 
 ---------------------------------------------------------------------
@@ -125,7 +144,7 @@ local function startAmbush(data)
     local gang = Config.Gangs[data.gang]
     if not gang then return end
 
-    local playerPed = cache.ped
+    local playerPed = PlayerPedId()
     local pCoords = GetEntityCoords(playerPed)
     local fwd = GetEntityForwardVector(IsPedOnMount(playerPed) and GetMount(playerPed) or playerPed)
     local dist = math.random(math.floor(Config.SpawnDistance.min), math.floor(Config.SpawnDistance.max)) + 0.0
@@ -180,12 +199,12 @@ local function startAmbush(data)
     if #Active.peds == 0 then cleanup(true) return end
 
     TriggerServerEvent('rsg-ambush:server:registerPeds', Active.id, netIds)
-    lib.notify({ title = locale('ambush_title'), description = locale('ambush_start', locale('gang_' .. data.gang)), type = 'warning', duration = 7000 })
+    notify(locale('ambush_start', locale('gang_' .. data.gang)), 'warning', nil, 7000)
 end
 
 local function tryAmbush(force)
     if Active then return end
-    local ped = cache.ped
+    local ped = PlayerPedId()
     if IsEntityDead(ped) then return end
     if not force then
         if Config.RequireMounted and not IsPedOnMount(ped) then return end
@@ -195,7 +214,7 @@ local function tryAmbush(force)
         local chance = Config.Debug and 100 or Config.TriggerChance
         if math.random(1, 100) > chance then return end
     end
-    local data = lib.callback.await('rsg-ambush:server:requestAmbush', false)
+    local data = RSGCore.Functions.AwaitCallback('rsg-ambush:server:requestAmbush', 10000)
     if data then startAmbush(data) end
 end
 
@@ -214,7 +233,7 @@ end)
 CreateThread(function()
     while true do
         if Active then
-            local ped = cache.ped
+            local ped = PlayerPedId()
             local pCoords = GetEntityCoords(ped)
             local alive, far = 0, true
             for _, b in ipairs(Active.peds) do
@@ -226,11 +245,8 @@ CreateThread(function()
 
             if alive == 0 and not Active.wonAt then
                 Active.wonAt = GetGameTimer()
-                for _, blip in ipairs(Active.blips) do
-                    if DoesBlipExist(blip) then RemoveBlip(blip) end
-                end
-                Active.blips = {}
-                lib.notify({ title = locale('ambush_title'), description = locale('ambush_won'), type = 'success' })
+                removeBlips()
+                notify(locale('ambush_won'), 'success')
             end
 
             local now = GetGameTimer()
