@@ -78,4 +78,4 @@ The server enforces the per-player cooldown, tracks the ambush and its peds, and
 | Can't loot | Move within `LootDistance`; each body pays once |
 | Bandits linger | They clean up after `MaxDuration` or `DespawnDistance` |
 
-Support: https://buymeacoffee.com/rexshack
+Support the Project : https://rexshack.tebex.store/
